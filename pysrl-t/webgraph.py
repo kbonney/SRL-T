@@ -109,6 +109,18 @@ class WebGraph:
 
     def find_path(self, start: int, goal: int, rnd: float = 0.0) -> IntArray:
         """Find path between two node indices using Dijkstra-like algorithm."""
+        if not self.nodes:
+            raise ValueError("Graph has no nodes")
+        
+        if start < 0 or start >= len(self.nodes):
+            raise ValueError(f"Invalid start node index: {start}")
+        
+        if goal < 0 or goal >= len(self.nodes):
+            raise ValueError(f"Invalid goal node index: {goal}")
+        
+        if start == goal:
+            return [start]
+        
         import random
         
         class Node:
@@ -146,11 +158,27 @@ class WebGraph:
 
     def find_nearest_node(self, p: Point) -> int:
         """Find the nearest node to point p."""
+        if not self.nodes:
+            raise ValueError("Graph has no nodes")
+        
+        if not self.paths or len(self.paths) == 0:
+            # If no paths, just find nearest node by distance
+            best = float('inf')
+            result = 0
+            for i, node in enumerate(self.nodes):
+                dist = math.hypot(node[0] - p[0], node[1] - p[1])
+                if dist < best:
+                    best = dist
+                    result = i
+            return result
+        
         best = float('inf')
         result = -1
         
         for i in range(len(self.paths)):
             for j in self.paths[i]:
+                if j >= len(self.nodes):
+                    continue
                 d = self._dist_to_line(p, self.nodes[i], self.nodes[j])
                 if d < best:
                     best = d
@@ -158,7 +186,17 @@ class WebGraph:
                     dn2 = math.hypot(self.nodes[j][0] - p[0], self.nodes[j][1] - p[1])
                     result = i if dn1 < dn2 else j
         
-        return result if result >= 0 else 0
+        if result < 0:
+            # Fallback: find nearest node by direct distance
+            best = float('inf')
+            result = 0
+            for i, node in enumerate(self.nodes):
+                dist = math.hypot(node[0] - p[0], node[1] - p[1])
+                if dist < best:
+                    best = dist
+                    result = i
+        
+        return result
 
     def _dist_to_line(self, p: Point, a: Point, b: Point) -> float:
         """Distance from point p to line segment ab."""
@@ -184,6 +222,9 @@ class WebGraph:
 
     def path_between(self, p: Point, q: Point, rnd: float = 0.0) -> PointArray:
         """Find path between two points."""
+        if not self.nodes:
+            raise ValueError("Graph has no nodes")
+        
         n1 = self.find_nearest_node(p)
         n2 = self.find_nearest_node(q)
         
@@ -198,8 +239,15 @@ class WebGraph:
 
     def invalid_connection(self, p: Point, q: Point) -> bool:
         """Check if connection p-q would intersect existing paths."""
+        if not self.nodes or not self.paths:
+            return False
+        
         for i in range(len(self.paths)):
+            if i >= len(self.nodes):
+                continue
             for j in self.paths[i]:
+                if j >= len(self.nodes):
+                    continue
                 a = self.nodes[i]
                 b = self.nodes[j]
                 if (p == a and q == b) or (p == b and q == a):
@@ -231,12 +279,16 @@ class WebGraph:
 
     def add_node(self, p: Point, from_node: int = -1) -> bool:
         """Add a node to the graph."""
-        if from_node != -1 and self.invalid_connection(p, self.nodes[from_node]):
-            return False
+        if from_node != -1:
+            if from_node < 0 or from_node >= len(self.nodes):
+                raise ValueError(f"Invalid from_node index: {from_node}")
+            if self.invalid_connection(p, self.nodes[from_node]):
+                return False
         
         c = len(self.nodes)
         self.nodes.append(p)
         self.paths.append([])
+        self.names.append('')
         
         if from_node != -1:
             self.paths[from_node].append(c)
@@ -246,6 +298,15 @@ class WebGraph:
 
     def connect_nodes(self, a: int, b: int) -> bool:
         """Connect two nodes by index."""
+        if not self.nodes:
+            raise ValueError("Graph has no nodes")
+        
+        if a < 0 or a >= len(self.nodes) or b < 0 or b >= len(self.nodes):
+            raise ValueError(f"Invalid node indices: {a}, {b}")
+        
+        if a == b:
+            return False  # Cannot connect node to itself
+        
         if b in self.paths[a]:
             self.paths[a].remove(b)
             self.paths[b].remove(a)
@@ -333,7 +394,7 @@ class WebGraphV2(WebGraph):
     def find_nearest_nodes(self, p: Point, amount: int) -> IntArray:
         """Find nearest nodes using spatial tree (simplified)."""
         if not self.nodes:
-            return []
+            raise ValueError("Graph has no nodes")
         
         distances = []
         for i, node in enumerate(self.nodes):
@@ -365,6 +426,11 @@ class WebGraphV2(WebGraph):
     def path_between_ex(self, p: Point, q: Point, rnd: float = 0.0, 
                        attempts: int = 3, safe: bool = True) -> PointArray:
         """Enhanced path finding with multiple attempts."""
+        if not self.nodes:
+            if safe:
+                return []
+            raise ValueError("Graph has no nodes")
+        
         if self._point_in_range(p, q, 4):
             return [p, q]
         

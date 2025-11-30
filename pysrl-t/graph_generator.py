@@ -3,7 +3,7 @@ WebGraph generator - automatically generates webgraphs from map images.
 Based on SRL-T's maploader.simba _BuildGraph function.
 """
 
-from typing import List, Tuple, Optional
+from typing import Any, List, Tuple, Optional
 import numpy as np
 from PIL import Image
 import math
@@ -75,7 +75,7 @@ def nr_cluster(points: PointArray, dist: float) -> PointArray2D:
                     to_process.append(j)
         
         # Convert indices to points
-        cluster = [tuple(points_array[idx]) for idx in cluster_indices]
+        cluster = [tuple[Any, ...](points_array[idx]) for idx in cluster_indices]
         clusters.append(cluster)
     
     return clusters
@@ -343,26 +343,26 @@ def build_graph(map_image: Image.Image, settings: WebGraphSettings) -> WebGraphV
     """
     result = WebGraphV2()
     
-    # Convert image to numpy array
-    img_array = np.array(map_image)
-    height, width = img_array.shape[:2]
-    
-    # Extract white (walkable) and red (doors) pixels
-    # Use numpy for faster extraction
-    white = []
-    red = []
-    white_set = set()  # For fast lookup
-    
-    if len(img_array.shape) == 3:
-        # RGB image
-        # White: (255, 255, 255)
-        # Red: Simba uses $FF = 0x0000FF in BGR = (B=255, G=0, R=0) 
-        #      In RGB PNG this would be (R=0, G=0, B=255) = blue, but let's check both
+    # Normalize image to RGB or grayscale based on mode
+    if map_image.mode == 'L':
+        # Grayscale image
+        img_array = np.array(map_image)
+        height, width = img_array.shape
+        white_mask = img_array == 255
+        white_coords = np.argwhere(white_mask)
+        white = [(int(coord[1]), int(coord[0])) for coord in white_coords]
+        white_set = set(white)
+        red = []
+    else:
+        # Color image - convert to RGB to ensure consistent format
+        rgb_image = map_image.convert('RGB')
+        img_array = np.array(rgb_image)
+        height, width = img_array.shape[:2]
+        
+        # Extract white (walkable) and red (doors) pixels
+        # PIL RGB format: (R, G, B) = (255, 255, 255) for white, (255, 0, 0) for red
         white_mask = (img_array[:, :, 0] == 255) & (img_array[:, :, 1] == 255) & (img_array[:, :, 2] == 255)
-        # Red in RGB: (255, 0, 0), but Simba might use BGR: (0, 0, 255)
-        red_mask_rgb = (img_array[:, :, 0] == 255) & (img_array[:, :, 1] == 0) & (img_array[:, :, 2] == 0)
-        red_mask_bgr = (img_array[:, :, 0] == 0) & (img_array[:, :, 1] == 0) & (img_array[:, :, 2] == 255)
-        red_mask = red_mask_rgb | red_mask_bgr
+        red_mask = (img_array[:, :, 0] == 255) & (img_array[:, :, 1] == 0) & (img_array[:, :, 2] == 0)
         
         white_coords = np.argwhere(white_mask)
         red_coords = np.argwhere(red_mask)
@@ -370,12 +370,6 @@ def build_graph(map_image: Image.Image, settings: WebGraphSettings) -> WebGraphV
         # Convert to (x, y) format (numpy gives (y, x))
         white = [(int(coord[1]), int(coord[0])) for coord in white_coords]
         red = [(int(coord[1]), int(coord[0])) for coord in red_coords]
-        white_set = set(white)
-    else:
-        # Grayscale image
-        white_mask = img_array == 255
-        white_coords = np.argwhere(white_mask)
-        white = [(int(coord[1]), int(coord[0])) for coord in white_coords]
         white_set = set(white)
     
     # Cluster walkable areas
@@ -659,41 +653,60 @@ def _validate_connection_simba(p: Point, q: Point, skeleton_tree, skeleton_point
     # Range query on skeleton (Simba: skeletonTree.RangeQuery(bounds))
     center = ((x1 + x2) / 2, (y1 + y2) / 2)
     radius = math.hypot(max_x - min_x, max_y - min_y) / 2
-    skeleton_in_box = skeleton_tree.query_ball_point(center, radius)
+    skeleton_indices = skeleton_tree.query_ball_point(center, radius)
     
-    if not skeleton_in_box:
+    if not skeleton_indices:
         return False
     
     # Cluster skeleton parts (Simba: .Cluster(1))
-    # For simplicity, check all skeleton points in box
+    # Extract skeleton points in the box and cluster them
+    skeleton_in_box = [skeleton_points[idx] for idx in skeleton_indices if idx < len(skeleton_points)]
+    if not skeleton_in_box:
+        return False
+    
+    skeleton_parts = nr_cluster(skeleton_in_box, 1.0)
+    
+    # Check if both nodes are within sqrt(2) of the same skeleton cluster part
+    # Simba logic: For each part, check if both p and q are in range
+    # If both are in range of the same part, connection is valid
+    # If one is in range but not the other, break (invalid)
     sqrt2 = math.sqrt(2)
-    j_in_range = False
-    n_in_range = False
     
-    for idx in skeleton_in_box:
-        if idx >= len(skeleton_points):
-            continue
-        skel_point = skeleton_points[idx]
+    for part in skeleton_parts:
+        j_in_range = False
+        n_in_range = False
         
-        # Check if p and q are within Sqrt(2) of skeleton point (Simba: InRange(p, Sqrt(2)))
-        dist_p = math.hypot(p[0] - skel_point[0], p[1] - skel_point[1])
-        dist_q = math.hypot(q[0] - skel_point[0], q[1] - skel_point[1])
+        for skel_point in part:
+            # Check if p and q are within Sqrt(2) of skeleton point (Simba: InRange(p, Sqrt(2)))
+            dist_p = math.hypot(p[0] - skel_point[0], p[1] - skel_point[1])
+            dist_q = math.hypot(q[0] - skel_point[0], q[1] - skel_point[1])
+            
+            if dist_p <= sqrt2:
+                j_in_range = True
+            if dist_q <= sqrt2:
+                n_in_range = True
+            
+            # If both in range of same skeleton part, connection is valid (Simba: Break(2))
+            if j_in_range and n_in_range:
+                return True
         
-        if dist_p <= sqrt2:
-            j_in_range = True
-        if dist_q <= sqrt2:
-            n_in_range = True
-        
-        # If both in range of same skeleton part, connection is valid
-        if j_in_range and n_in_range:
-            return True
+        # If one is in range but not the other, this part is invalid (Simba: if jInRange <> nInRange then Break)
+        if j_in_range != n_in_range:
+            break
     
-    # Both must be in range of skeleton parts
-    return j_in_range and n_in_range
+    # Connection is invalid if not both nodes are in range of the same skeleton part
+    return False
 
 
 def _colors_in_line_ex(p: Point, q: Point, map_image: Image.Image, colors: List[int]) -> bool:
-    """Check if line p-q contains any of the specified colors (Simba: ColorsInLineEx)."""
+    """
+    Check if line p-q contains any of the specified colors (Simba: ColorsInLineEx).
+    
+    Colors checked:
+    - Black: (0, 0, 0) in RGB
+    - Gray: (0x33, 0x33, 0x33) = (51, 51, 51) in RGB
+    - Red: (255, 0, 0) in RGB or (0, 0, 255) in BGR format
+    """
     img_array = np.array(map_image)
     steps = max(abs(p[0] - q[0]), abs(p[1] - q[1]))
     if steps == 0:
@@ -707,8 +720,17 @@ def _colors_in_line_ex(p: Point, q: Point, map_image: Image.Image, colors: List[
         if 0 <= x < img_array.shape[1] and 0 <= y < img_array.shape[0]:
             if len(img_array.shape) == 3:
                 pixel = tuple(img_array[y, x])
-                # Check if pixel matches any color (black=0, gray=0x333333, red=0xFF)
-                if pixel == (0, 0, 0) or pixel == (0x33, 0x33, 0x33) or (pixel[2] == 0xFF and pixel[0] == 0 and pixel[1] == 0):
+                # Check if pixel matches any color
+                # Black: (0, 0, 0)
+                # Gray: (51, 51, 51) = 0x333333
+                # Red in RGB: (255, 0, 0) or in BGR: (0, 0, 255)
+                if pixel == (0, 0, 0):
+                    return True
+                if pixel == (0x33, 0x33, 0x33):
+                    return True
+                # Red: RGB (255, 0, 0) or BGR (0, 0, 255)
+                if (pixel[0] == 255 and pixel[1] == 0 and pixel[2] == 0) or \
+                   (pixel[0] == 0 and pixel[1] == 0 and pixel[2] == 255):
                     return True
             else:
                 if img_array[y, x] in colors:

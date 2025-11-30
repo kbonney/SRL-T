@@ -7,6 +7,10 @@ import sys
 import os
 import json
 from typing import Optional
+import matplotlib
+import matplotlib.pyplot as plt
+# matplotlib.use('Agg')  # Non-interactive backend for saving files
+
 
 # Handle imports
 if __name__ == '__main__' or not __package__:
@@ -57,6 +61,33 @@ def generate_graph_for_region(region_name: str, box: tuple, plane: int = 0,
     # Generate graph
     print("  Generating graph...")
     graph = build_graph(collision_map, settings)
+    
+    # Plot map colored by clusters
+    import numpy as np
+    width, height = collision_map.size
+    cluster_image = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    # Generate colors for each cluster
+    num_clusters = len(graph.walkable_clusters)
+    colors = plt.cm.tab20(np.linspace(0, 1, num_clusters))[:, :3]  # Get RGB values
+    colors = (colors * 255).astype(np.uint8)
+    
+    # Color each cluster
+    for i, cluster in enumerate(graph.walkable_clusters):
+        color = colors[i % len(colors)]
+        for x, y in cluster:
+            if 0 <= x < width and 0 <= y < height:
+                cluster_image[y, x] = color
+    
+    # Display the plot
+    plt.figure(figsize=(12, 12))
+    plt.imshow(cluster_image, origin='upper')
+    plt.title(f'{region_name} - Clusters ({num_clusters} clusters)')
+    plt.axis('off')
+    plt.tight_layout()
+    plt.savefig(f'{region_name.lower()}_clusters.png', dpi=150, bbox_inches='tight')
+    print(f"  Saved cluster visualization to: {region_name.lower()}_clusters.png")
+    plt.close()
     
     print(f"  Generated: {len(graph.nodes)} nodes, {len(graph.doors)} doors")
     
